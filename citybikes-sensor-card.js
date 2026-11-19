@@ -6,7 +6,7 @@
  * bikes, e-bikes and empty docks, with a dock occupancy bar.
  */
 
-const VERSION = "1.2.0";
+const VERSION = "1.3.0";
 const CARD = "citybikes-sensor-card";
 // The optional map above the stations, and the grid rows it adds.
 const MAP_ASPECT_RATIO = "16:9";
@@ -123,6 +123,53 @@ function parseTimestamp(value) {
   if (!value) return null;
   const date = new Date(String(value).replace(/([+-]\d{2}:?\d{2})Z$/, "$1"));
   return isNaN(date) ? null : date;
+}
+
+/** Distance in metres between two points, along the earth's surface. */
+function distanceMeters(lat1, lon1, lat2, lon2) {
+  const rad = Math.PI / 180;
+  const a =
+    Math.sin(((lat2 - lat1) * rad) / 2) ** 2 +
+    Math.cos(lat1 * rad) * Math.cos(lat2 * rad) * Math.sin(((lon2 - lon1) * rad) / 2) ** 2;
+  return 2 * 6371000 * Math.asin(Math.sqrt(a));
+}
+
+/** "350 m" or "1.2 km", or miles for the imperial unit system. */
+function formatDistance(hass, meters) {
+  const lang = hass.locale?.language || hass.language;
+  const fmt = (value, digits) =>
+    new Intl.NumberFormat(lang, { maximumFractionDigits: digits }).format(value);
+  if (hass.config?.unit_system?.length === "mi") {
+    const miles = meters / 1609.344;
+    return miles < 0.1 ? `${fmt(meters * 3.28084, 0)} ft` : `${fmt(miles, 1)} mi`;
+  }
+  return meters < 1000 ? `${fmt(Math.round(meters / 10) * 10, 0)} m` : `${fmt(meters / 1000, 1)} km`;
+}
+
+/**
+ * The station sensors with their distance from home, closest first. Stations
+ * without a position, or without a home to measure from, come last by name.
+ */
+function stationsByDistance(hass) {
+  const home = hass.states["zone.home"]?.attributes;
+  const hasHome = home && Number.isFinite(home.latitude) && Number.isFinite(home.longitude);
+  return findSensorStations(hass)
+    .map((id) => {
+      const attrs = hass.states[id].attributes;
+      const located = Number.isFinite(attrs.latitude) && Number.isFinite(attrs.longitude);
+      return {
+        id,
+        name: attrs.friendly_name || id,
+        distance:
+          hasHome && located
+            ? distanceMeters(home.latitude, home.longitude, attrs.latitude, attrs.longitude)
+            : null,
+      };
+    })
+    .sort(
+      (a, b) =>
+        (a.distance ?? Infinity) - (b.distance ?? Infinity) || a.name.localeCompare(b.name)
+    );
 }
 
 function relativeTime(hass, date) {
@@ -309,10 +356,16 @@ class CityBikesCard extends HTMLElement {
       type: "map",
       aspect_ratio: MAP_ASPECT_RATIO,
       auto_fit: true,
-      entities: located.map((s) => ({
-        entity: s.entity,
-        name: s.bikes === null ? "–" : String(s.bikes),
-      })),
+      // Fit home into view too, not only the stations.
+      fit_zones: true,
+      entities: [
+        ...located.map((s) => ({
+          entity: s.entity,
+          name: s.bikes === null ? "–" : String(s.bikes),
+        })),
+        // Home, drawn as Home Assistant draws zones: its icon, no radius.
+        ...(this._hass.states["zone.home"] ? [{ entity: "zone.home" }] : []),
+      ],
     };
     const json = JSON.stringify(config);
 
@@ -461,6 +514,22 @@ const EDITOR_STYLE = `
   .citybikes-image button:disabled { opacity: 0.5; cursor: default; }
   .citybikes-image .status { font-size: 0.9em; color: var(--secondary-text-color); }
   .citybikes-image .status.error { color: var(--error-color, #db4437); }
+  .citybikes-stations { margin-top: 24px; }
+  .citybikes-stations .label { color: var(--primary-text-color); }
+  .citybikes-stations .hint { margin: 2px 0 8px; font-size: 0.9em; color: var(--secondary-text-color); }
+  .citybikes-stations .list {
+    max-height: 320px; overflow-y: auto;
+    border: 1px solid var(--divider-color); border-radius: 8px;
+  }
+  .citybikes-stations label {
+    display: flex; align-items: center; gap: 12px; padding: 8px 12px; cursor: pointer;
+    color: var(--primary-text-color);
+  }
+  .citybikes-stations label + label { border-top: 1px solid var(--divider-color); }
+  .citybikes-stations input { margin: 0; width: 18px; height: 18px; accent-color: var(--primary-color); flex: none; }
+  .citybikes-stations .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .citybikes-stations .distance { color: var(--secondary-text-color); font-variant-numeric: tabular-nums; }
+  .citybikes-stations .empty { padding: 8px 12px; color: var(--secondary-text-color); }
 `;
 
 class CityBikesCardEditor extends HTMLElement {
@@ -471,8 +540,10 @@ class CityBikesCardEditor extends HTMLElement {
 
   set hass(hass) {
     this._hass = hass;
-    if (this._form) this._form.hass = hass;
-    else this._render();
+    if (this._form) {
+      this._form.hass = hass;
+      this._renderStations();
+    } else this._render();
   }
 
   _render() {
@@ -494,13 +565,50 @@ class CityBikesCardEditor extends HTMLElement {
       { name: "image", selector: { text: {} } },
       { name: "show_reported", selector: { boolean: {} } },
       { name: "show_map", selector: { boolean: {} } },
-      {
-        name: "entities",
-        selector: {
-          entity: { multiple: true, include_entities: findSensorStations(this._hass) },
-        },
-      },
     ];
+    this._renderStations();
+  }
+
+  /**
+   * Our own station picker, closest to home first and with the distance, which
+   * Home Assistant's entity picker cannot show.
+   */
+  _renderStations() {
+    const stations = stationsByDistance(this._hass);
+    const selected = new Set(this._config.entities || []);
+    // Rebuild only when the stations change, so ticking one keeps focus and scroll.
+    const key = JSON.stringify(stations);
+    if (key === this._stationsKey) {
+      this._stationList.querySelectorAll("input").forEach((input) => {
+        input.checked = selected.has(input.value);
+      });
+      return;
+    }
+    this._stationsKey = key;
+
+    this._stationList.innerHTML = stations.length
+      ? stations
+          .map(
+            (s) => `
+        <label>
+          <input type="checkbox" value="${escapeHtml(s.id)}" ${selected.has(s.id) ? "checked" : ""}>
+          <span class="name">${escapeHtml(s.name)}</span>
+          ${s.distance === null ? "" : `<span class="distance">${formatDistance(this._hass, s.distance)}</span>`}
+        </label>`
+          )
+          .join("")
+      : `<div class="empty">No CityBikes stations found.</div>`;
+  }
+
+  _toggleStation() {
+    // Keep the chosen stations closest first, as the card shows them in this order.
+    const checked = new Set(
+      [...this._stationList.querySelectorAll("input:checked")].map((input) => input.value)
+    );
+    const entities = stationsByDistance(this._hass)
+      .map((s) => s.id)
+      .filter((id) => checked.has(id));
+    this._update({ ...this._config, entities });
   }
 
   _build() {
@@ -540,11 +648,19 @@ class CityBikesCardEditor extends HTMLElement {
         image: "Image URL (filled in when you upload; leave empty for the bike icon)",
         show_reported: "Show when each station last reported",
         show_map: "Show a map of the stations",
-        entities: "Stations (leave empty to show all)",
       })[schema.name];
     this._form.addEventListener("value-changed", (ev) => this._update(ev.detail.value));
 
-    this.append(style, section, this._form);
+    const stations = document.createElement("div");
+    stations.className = "citybikes-stations";
+    stations.innerHTML = `
+      <div class="label">Stations</div>
+      <div class="hint">Closest to home first. Pick none to show all stations.</div>
+      <div class="list"></div>`;
+    this._stationList = stations.querySelector(".list");
+    this._stationList.addEventListener("change", () => this._toggleStation());
+
+    this.append(style, section, this._form, stations);
   }
 
   async _upload(file) {

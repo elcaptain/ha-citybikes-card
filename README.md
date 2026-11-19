@@ -63,8 +63,10 @@ for all options. Restart Home Assistant after changing it.
 ## Adding the card
 
 Edit a dashboard, choose **Add card** and pick **CityBikes**. The visual editor lets
-you set a title, a bike image and pick stations. Without stations it shows every
-CityBikes station, sorted by name.
+you set a title, a bike image and pick stations. The station list shows each
+station's distance from your home, closest first, and the card shows the stations
+you pick in that order. Without stations it shows every CityBikes station, sorted
+by name.
 
 ```yaml
 type: custom:citybikes-sensor-card
