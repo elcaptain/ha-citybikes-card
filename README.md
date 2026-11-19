@@ -3,6 +3,8 @@
 A dashboard card for bike-share stations. For each station it shows the number of
 available bikes, a bar of how full the docks are, and the e-bikes and empty docks.
 
+<img src="https://raw.githubusercontent.com/elcaptain/ha-citybikes-card/main/images/card.png" alt="CityBikes Card showing three stations with their bikes, e-bikes and empty docks" width="440">
+
 It's made for Home Assistant's built-in
 [CityBikes integration](https://www.home-assistant.io/integrations/citybikes/), so
 you can keep your YAML setup and only add the card.
