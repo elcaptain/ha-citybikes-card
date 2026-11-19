@@ -69,15 +69,17 @@ CityBikes station, sorted by name.
 type: custom:citybikes-sensor-card
 title: Bikes near home
 image: /local/citybike.png   # optional; replaces the bike icon
+show_reported: false         # optional; hides "Reported 5 minutes ago"
 entities:                    # optional; station sensors
   - sensor.valenbisi_123
 ```
 
-| Option     | Description                                                              |
-| ---------- | ------------------------------------------------------------------------ |
-| `title`    | Optional card title.                                                     |
-| `image`    | Optional picture of your network's bike, shown instead of the bike icon. |
-| `entities` | Optional list of station sensors. Leave out to show all stations.        |
+| Option          | Description                                                                                                       |
+| --------------- | ----------------------------------------------------------------------------------------------------------------- |
+| `title`         | Optional card title.                                                                                              |
+| `image`         | Optional picture of your network's bike, shown instead of the bike icon.                                          |
+| `entities`      | Optional list of station sensors. Leave out to show all stations.                                                 |
+| `show_reported` | Show when each station last reported, such as "Reported 5 minutes ago". On by default; set to `false` to hide it. |
 
 ### Using a picture of your city's bike
 

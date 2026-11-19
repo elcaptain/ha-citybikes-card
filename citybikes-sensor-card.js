@@ -6,7 +6,7 @@
  * bikes, e-bikes and empty docks, with a dock occupancy bar.
  */
 
-const VERSION = "1.0.0";
+const VERSION = "1.1.0";
 const CARD = "citybikes-sensor-card";
 // Stations up to this many docks get one bar segment per dock. Bigger stations
 // (some have hundreds) and placeholder counts for dockless networks get a
@@ -41,12 +41,19 @@ const STYLE = `
     text-overflow: ellipsis;
   }
   .meta {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 2px 14px;
+    min-width: 0;
     font-size: 0.85em;
     color: var(--secondary-text-color);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
   }
+  .meta span { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+  .meta .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+  .meta .dot.ebikes { background: var(--success-color, #43a047); }
+  .meta .dot.free { background: var(--divider-color); }
+  .meta .status { opacity: 0.6; }
   .count {
     grid-row: span 2;
     display: flex;
@@ -75,17 +82,6 @@ const STYLE = `
   .bar.docks { gap: 2px; background: none; border-radius: 0; }
   .bar.docks span { flex: 1; min-width: 0; border-radius: 2px; }
   .bar.docks .free { background: var(--divider-color); }
-  .legend {
-    grid-column: 1 / -1;
-    display: flex;
-    flex-wrap: wrap;
-    gap: 4px 14px;
-    font-size: 0.85em;
-    color: var(--secondary-text-color);
-  }
-  .legend span { display: inline-flex; align-items: center; gap: 4px; }
-  .legend ha-icon { --mdc-icon-size: 16px; }
-  .legend .ebikes ha-icon { color: var(--success-color, #43a047); }
   .unavailable .count, .unavailable .bar { opacity: 0.4; }
   .empty-state { padding: 16px; color: var(--secondary-text-color); }
 `;
@@ -101,6 +97,16 @@ function numeric(stateObj) {
   if (!stateObj) return null;
   const value = Number(stateObj.state);
   return Number.isFinite(value) && stateObj.state !== "" ? value : null;
+}
+
+/**
+ * Parse a CityBikes timestamp. Some networks send both an offset and a "Z"
+ * ("2026-11-19T09:38:12.123593+00:00Z"), which Date cannot parse.
+ */
+function parseTimestamp(value) {
+  if (!value) return null;
+  const date = new Date(String(value).replace(/([+-]\d{2}:?\d{2})Z$/, "$1"));
+  return isNaN(date) ? null : date;
 }
 
 function relativeTime(hass, date) {
@@ -198,11 +204,10 @@ class CityBikesCard extends HTMLElement {
     const attrs = stateObj.attributes || {};
     return {
       name: attrs.friendly_name || entityId,
-      network: null,
       bikes: numeric(stateObj),
       ebikes: attributeNumber(attrs.free_ebikes),
       docks: attributeNumber(attrs.empty_slots),
-      reported: attrs.timestamp ? new Date(attrs.timestamp) : null,
+      reported: parseTimestamp(attrs.timestamp),
       entity: entityId,
       watched: [entityId],
     };
@@ -290,33 +295,27 @@ class CityBikesCard extends HTMLElement {
     return this._resolvedUrl;
   }
 
-  _renderStation({ name, network, bikes, ebikes, docks, reported, entity }) {
+  _renderStation({ name, bikes, ebikes, docks, reported, entity }) {
     const hass = this._hass;
     const unavailable = bikes === null;
+    const status = unavailable
+      ? "Unavailable"
+      : reported && this._config.show_reported !== false
+        ? `Reported ${relativeTime(hass, reported)}`
+        : null;
     const meta = [
-      network,
-      unavailable
-        ? "Unavailable"
-        : reported && !isNaN(reported)
-          ? `Reported ${relativeTime(hass, reported)}`
-          : null,
-    ]
-      .filter(Boolean)
-      .map(escapeHtml)
-      .join(" · ");
+      ebikes !== null
+        ? `<span><i class="dot ebikes"></i>${ebikes} e-bikes</span>`
+        : "",
+      docks !== null ? `<span><i class="dot free"></i>${docks} empty docks</span>` : "",
+      status ? `<span class="status">${escapeHtml(status)}</span>` : "",
+    ].join("");
 
     let countClass = "";
     if (bikes === 0) countClass = "empty";
     else if (bikes !== null && bikes <= 2) countClass = "low";
 
     const bar = this._renderBar(bikes, ebikes, docks);
-
-    const legend = [
-      ebikes !== null
-        ? `<span class="ebikes"><ha-icon icon="mdi:bicycle-electric"></ha-icon>${ebikes} e-bikes</span>`
-        : "",
-      docks !== null ? `<span><ha-icon icon="mdi:parking"></ha-icon>${docks} empty docks</span>` : "",
-    ].join("");
 
     return `
       <div class="station ${unavailable ? "unavailable" : ""}" role="button" tabindex="0"
@@ -327,7 +326,6 @@ class CityBikesCard extends HTMLElement {
         </div>
         <div class="meta">${meta}</div>
         ${bar}
-        ${legend ? `<div class="legend">${legend}</div>` : ""}
       </div>`;
   }
 
@@ -414,10 +412,11 @@ class CityBikesCardEditor extends HTMLElement {
     this._uploadButton.textContent = image ? "Replace image" : "Upload image";
 
     this._form.hass = this._hass;
-    this._form.data = this._config;
+    this._form.data = { show_reported: true, ...this._config };
     this._form.schema = [
       { name: "title", selector: { text: {} } },
       { name: "image", selector: { text: {} } },
+      { name: "show_reported", selector: { boolean: {} } },
       {
         name: "entities",
         selector: {
@@ -462,6 +461,7 @@ class CityBikesCardEditor extends HTMLElement {
       ({
         title: "Title",
         image: "Image URL (filled in when you upload; leave empty for the bike icon)",
+        show_reported: "Show when each station last reported",
         entities: "Stations (leave empty to show all)",
       })[schema.name];
     this._form.addEventListener("value-changed", (ev) => this._update(ev.detail.value));
@@ -508,6 +508,7 @@ class CityBikesCardEditor extends HTMLElement {
     const config = { ...value };
     if (!config.title) delete config.title;
     if (!config.image) delete config.image;
+    if (config.show_reported !== false) delete config.show_reported;
     if (!config.entities?.length) delete config.entities;
     this._config = config;
     this._render();
