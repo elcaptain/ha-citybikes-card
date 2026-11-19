@@ -19,6 +19,7 @@ instead? It comes with its own version of this card, so you don't need this one.
 - Shows how long ago each station last reported.
 - Tap a station to open its details.
 - Optional picture of your city's bike instead of the bike icon.
+- Optional map of the stations, each marker showing its number of available bikes.
 - Follows your theme, light and dark, and the sections layout.
 
 ## Installation
@@ -70,6 +71,7 @@ type: custom:citybikes-sensor-card
 title: Bikes near home
 image: /local/citybike.png   # optional; replaces the bike icon
 show_reported: false         # optional; hides "Reported 5 minutes ago"
+show_map: true               # optional; map of the stations above the list
 entities:                    # optional; station sensors
   - sensor.valenbisi_123
 ```
@@ -80,6 +82,7 @@ entities:                    # optional; station sensors
 | `image`         | Optional picture of your network's bike, shown instead of the bike icon.                                          |
 | `entities`      | Optional list of station sensors. Leave out to show all stations.                                                 |
 | `show_reported` | Show when each station last reported, such as "Reported 5 minutes ago". On by default; set to `false` to hide it. |
+| `show_map`      | Show a map of the stations above the list, each marker with its number of available bikes. Off by default.        |
 
 ### Using a picture of your city's bike
 

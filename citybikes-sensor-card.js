@@ -6,8 +6,11 @@
  * bikes, e-bikes and empty docks, with a dock occupancy bar.
  */
 
-const VERSION = "1.1.0";
+const VERSION = "1.2.0";
 const CARD = "citybikes-sensor-card";
+// The optional map above the stations, and the grid rows it adds.
+const MAP_ASPECT_RATIO = "16:9";
+const MAP_ROWS = 3;
 // Stations up to this many docks get one bar segment per dock. Bigger stations
 // (some have hundreds) and placeholder counts for dockless networks get a
 // continuous bar, because the segments would be too thin to see.
@@ -22,6 +25,19 @@ const STYLE = `
     font-weight: var(--ha-font-weight-normal, 400);
     color: var(--ha-card-header-color, var(--primary-text-color));
   }
+  .map {
+    /* Home Assistant's map card sits inside this card: drop its own frame. */
+    --ha-card-border-width: 0;
+    --ha-card-border-radius: 0;
+    --ha-card-box-shadow: none;
+    --ha-card-background: transparent;
+    /* Half-size markers: a station only needs room for its bike count. */
+    --ha-marker-size: 24px;
+    --ha-marker-font-size: 12px;
+    --ha-marker-border-width: 2px;
+    margin-top: 12px;
+  }
+  .map:first-child { margin-top: 0; }
   .stations { padding: 8px 0; }
   .station {
     display: grid;
@@ -160,6 +176,14 @@ class CityBikesCard extends HTMLElement {
     this._config = {};
     this._hass = null;
     this._renderKey = null;
+    // The map lives outside the redrawn part, so it keeps its position and zoom.
+    this.shadowRoot.innerHTML = `<style>${STYLE}</style>
+      <ha-card><div class="header" hidden></div><div class="map" hidden></div><div class="body"></div></ha-card>`;
+    this._header = this.shadowRoot.querySelector(".header");
+    this._mapHost = this.shadowRoot.querySelector(".map");
+    this._body = this.shadowRoot.querySelector(".body");
+    this._map = null;
+    this._mapConfig = null;
   }
 
   setConfig(config) {
@@ -173,15 +197,19 @@ class CityBikesCard extends HTMLElement {
 
   set hass(hass) {
     this._hass = hass;
+    if (this._map) this._map.hass = hass;
     this._render();
   }
 
   getCardSize() {
-    return 1 + 2 * Math.max(this._stations().length, 1);
+    return 1 + 2 * Math.max(this._stations().length, 1) + (this._config.show_map ? MAP_ROWS : 0);
   }
 
   getGridOptions() {
-    const rows = Math.max(this._stations().length, 1) * 2 + (this._config.title ? 1 : 0);
+    const rows =
+      Math.max(this._stations().length, 1) * 2 +
+      (this._config.title ? 1 : 0) +
+      (this._config.show_map ? MAP_ROWS : 0);
     return { columns: 6, min_columns: 3, rows, min_rows: 2 };
   }
 
@@ -208,6 +236,7 @@ class CityBikesCard extends HTMLElement {
       ebikes: attributeNumber(attrs.free_ebikes),
       docks: attributeNumber(attrs.empty_slots),
       reported: parseTimestamp(attrs.timestamp),
+      located: Number.isFinite(attrs.latitude) && Number.isFinite(attrs.longitude),
       entity: entityId,
       watched: [entityId],
     };
@@ -232,9 +261,10 @@ class CityBikesCard extends HTMLElement {
     if (key === this._renderKey) return;
     this._renderKey = key;
 
-    const title = this._config.title
-      ? `<div class="header">${escapeHtml(this._config.title)}</div>`
-      : "";
+    this._header.hidden = !this._config.title;
+    this._header.textContent = this._config.title || "";
+    this._renderMap(stations);
+
     const body = stations.length
       ? `<div class="stations">${stations.map((s) => this._renderStation(s)).join("")}</div>`
       : `<div class="empty-state">${
@@ -243,7 +273,7 @@ class CityBikesCard extends HTMLElement {
             : "No CityBikes stations found. Set up the CityBikes sensor in configuration.yaml first."
         }</div>`;
 
-    this.shadowRoot.innerHTML = `<style>${STYLE}</style><ha-card>${title}${body}</ha-card>`;
+    this._body.innerHTML = body;
     // A broken image link falls back to the bike icon, and is not retried.
     this.shadowRoot.querySelectorAll(".count img").forEach((img) => {
       img.addEventListener("error", () => {
@@ -263,6 +293,52 @@ class CityBikesCard extends HTMLElement {
         }
       });
     });
+  }
+
+  /**
+   * Show the stations on Home Assistant's own map card, each marker labelled
+   * with its number of available bikes.
+   */
+  _renderMap(stations) {
+    const located = stations.filter((s) => s.located);
+    const show = Boolean(this._config.show_map) && located.length > 0;
+    this._mapHost.hidden = !show;
+    if (!show) return;
+
+    const config = {
+      type: "map",
+      aspect_ratio: MAP_ASPECT_RATIO,
+      auto_fit: true,
+      entities: located.map((s) => ({
+        entity: s.entity,
+        name: s.bikes === null ? "–" : String(s.bikes),
+      })),
+    };
+    const json = JSON.stringify(config);
+
+    if (!this._map) {
+      if (this._mapLoading) return;
+      if (!window.loadCardHelpers) {
+        this._mapHost.hidden = true;
+        return;
+      }
+      this._mapLoading = window
+        .loadCardHelpers()
+        .then((helpers) => {
+          this._map = helpers.createCardElement(config);
+          this._mapConfig = json;
+          this._map.hass = this._hass;
+          this._mapHost.append(this._map);
+        })
+        .catch(() => (this._mapHost.hidden = true))
+        .finally(() => (this._mapLoading = null));
+      return;
+    }
+    if (json !== this._mapConfig) {
+      this._mapConfig = json;
+      this._map.setConfig(config);
+    }
+    this._map.hass = this._hass;
   }
 
   _bikeImage() {
@@ -417,6 +493,7 @@ class CityBikesCardEditor extends HTMLElement {
       { name: "title", selector: { text: {} } },
       { name: "image", selector: { text: {} } },
       { name: "show_reported", selector: { boolean: {} } },
+      { name: "show_map", selector: { boolean: {} } },
       {
         name: "entities",
         selector: {
@@ -462,6 +539,7 @@ class CityBikesCardEditor extends HTMLElement {
         title: "Title",
         image: "Image URL (filled in when you upload; leave empty for the bike icon)",
         show_reported: "Show when each station last reported",
+        show_map: "Show a map of the stations",
         entities: "Stations (leave empty to show all)",
       })[schema.name];
     this._form.addEventListener("value-changed", (ev) => this._update(ev.detail.value));
@@ -509,6 +587,7 @@ class CityBikesCardEditor extends HTMLElement {
     if (!config.title) delete config.title;
     if (!config.image) delete config.image;
     if (config.show_reported !== false) delete config.show_reported;
+    if (!config.show_map) delete config.show_map;
     if (!config.entities?.length) delete config.entities;
     this._config = config;
     this._render();
