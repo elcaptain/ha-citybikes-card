@@ -1,0 +1,6 @@
+{
+  "name": "CityBikes Card",
+  "filename": "citybikes-sensor-card.js",
+  "homeassistant": "2026.10.0",
+  "render_readme": true
+}
